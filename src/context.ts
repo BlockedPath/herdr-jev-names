@@ -47,7 +47,41 @@ const SHELLS = new Set(["zsh", "-zsh", "bash", "-bash", "fish", "-fish", "sh", "
 export const AGENT_WORDS = new Set([
   "amp", "claude", "claude code", "codex", "pi", "grok", "gemini", "cursor", "cursor agent", "cursor-agent",
   "opencode", "open_code", "aider", "goose", "droid", "copilot", "qwen", "kimi", "crush", "agent",
+  "devin", "agy", "cline", "omp", "mastracode", "kiro", "hermes", "kilo", "qodercli", "letta", "maki", "muse",
 ]);
+
+/** Programs herdr recognizes as agents (`herdr agent start --kind`), by executable name. */
+export const HERDR_AGENTS = new Set([
+  "pi", "claude", "codex", "gemini", "cursor", "cursor-agent", "agent", "devin", "agy", "cline", "omp", "mastracode", "opencode",
+  "copilot", "kimi", "kiro", "droid", "amp", "grok", "hermes", "kilo", "qodercli", "qwen", "letta", "maki", "muse",
+]);
+
+const PACKAGE_RUNNERS: Record<string, string | null> = { npx: null, bunx: null, pnpx: null, uvx: null, bun: "x", pnpm: "dlx", yarn: "dlx", pipx: "run" };
+
+/** Normalizes a program or package name: `@openai/codex@latest` -> `codex`, `claude-code` -> `claude`. */
+function agentWord(name: string): string | null {
+  const bare = basename(name).toLowerCase().replace(/^@[^/]+\//, "").replace(/@.*$/, "");
+  if (AGENT_WORDS.has(bare)) return bare;
+  const stem = bare.replace(/-(?:code|cli|agent)$/, "");
+  return AGENT_WORDS.has(stem) ? stem : null;
+}
+
+/** The coding agent a command runs, directly or through npx/bunx/pnpm dlx/uvx, or null. */
+export function agentProgram(command: string[] | null): string | null {
+  if (!command?.length) return null;
+  const head = basename(command[0]!).toLowerCase();
+  if (head in PACKAGE_RUNNERS) {
+    const sub = PACKAGE_RUNNERS[head];
+    let rest = command.slice(1);
+    if (sub) {
+      if (rest[0] !== sub) return agentWord(head);
+      rest = rest.slice(1);
+    }
+    const pkg = rest.find((a) => !a.startsWith("-"));
+    return pkg ? agentWord(pkg) : null;
+  }
+  return agentWord(head);
+}
 
 const BRANCH_DEFAULTS = new Set(["main", "master", "trunk", "develop", "dev", "HEAD"]);
 

@@ -1,7 +1,7 @@
 /** One pass over the session: decide and apply names for every pane, then every tab. */
 import type { Config } from "./config";
 import type { PaneContext } from "./context";
-import { collectPane, readSession, sessionFields } from "./context";
+import { agentProgram, collectPane, HERDR_AGENTS, readSession, sessionFields } from "./context";
 import type { Herdr, Snapshot, SnapshotPane } from "./herdr";
 import type { Classifier } from "./jev";
 import { choiceAnswer } from "./jev";
@@ -195,6 +195,15 @@ export async function sweep(deps: Deps, opts: SweepOptions): Promise<Decision[]>
       };
 
       const ctx = await collectPane(herdr, pane, agentInfo.get(id), { sendPrompts: cfg.sendPrompts });
+      const program = ctx.agent ? null : agentProgram(ctx.command);
+      if (program) {
+        // An agent herdr detects runs for a moment before herdr reports it, and after it stops.
+        // Naming it as a plain terminal then would replace its task name with a generic one; its
+        // own events will name it. Agents herdr can't detect are named as agents.
+        if (!forced && HERDR_AGENTS.has(program)) return;
+        ctx.agent = program;
+        ctx.command = null;
+      }
       Object.assign(entry, { project: ctx.project, branch: ctx.branch, agent: ctx.agent, title: ctx.titlePhrases[0] ?? null });
       if (ctx.agent) {
         // Remembered so the pane can keep a name from this agent after it exits.
@@ -284,7 +293,9 @@ export async function sweep(deps: Deps, opts: SweepOptions): Promise<Decision[]>
       const entry: TabEntry = (state.tabs[id] ??= {});
       const forced = opts.forceTabs?.has(id) ?? false;
       if (forced && opts.unlock) entry.locked = false;
-      const own = forced && opts.unlock ? "free" : ownership(tab.label, entry, isDefaultTabLabel(placeholders));
+      let own = forced && opts.unlock ? "free" : ownership(tab.label, entry, isDefaultTabLabel(placeholders));
+      // A number typed over a name the plugin gave is the user's choice, like clearing a pane label.
+      if (own === "free" && entry.auto && /^\d+$/.test(tab.label.trim()) && tab.label.trim() !== entry.auto) own = "foreign";
       const record = (d: Omit<Decision, "kind" | "id" | "from">) => decisions.push({ kind: "tab", id, from: tab.label, ...d });
       if (own === "foreign") {
         if (!entry.locked) record({ to: null, action: "locked", reason: LOCKED_REASON });
@@ -316,19 +327,20 @@ export async function sweep(deps: Deps, opts: SweepOptions): Promise<Decision[]>
       let pick: string | null = null;
       let name: string | null = null;
       let detail: Record<string, unknown> | undefined;
-      const request = summaries.length === 1 ? null : tabRequest(summaries, wsLabel, others);
-      if (summaries.length === 1 || request?.options.length === 1) {
+      // A one-letter pane label (often a slip of the rename key) is no tab name.
+      const lone = summaries.length === 1 && summaries[0]!.name && Array.from(summaries[0]!.name.trim()).length >= 2 ? summaries[0]!.name : null;
+      const request = lone ? null : tabRequest(summaries, wsLabel, others);
+      if (lone || request?.options.length === 1) {
         // One pane or one candidate: nothing for Jev to choose.
-        pick = summaries.length === 1 ? summaries[0]!.name : request!.options[0]!;
-        if (pick && taken(truncate(pick, cfg.maxTabLength))) {
+        pick = lone ?? request!.options[0]!;
+        if (taken(truncate(pick, cfg.maxTabLength))) {
           // Leave the fingerprint unset so the tab is tried again once the name is free.
           record({ to: null, action: "kept", reason: `another tab is already called ${pick}` });
           continue;
         }
-        name = pick ? truncate(pick, cfg.maxTabLength) : null;
+        name = truncate(pick, cfg.maxTabLength);
       } else if (!request) {
-        entry.fp = fp;
-        continue;
+        name = null;
       } else if (!jev) {
         record({ to: null, action: "skipped", reason: "no Jev API key" });
         continue;
@@ -352,6 +364,31 @@ export async function sweep(deps: Deps, opts: SweepOptions): Promise<Decision[]>
         }
       }
       if (!name) {
+        // Nothing left to call it, e.g. the pane it was named after closed: a name the plugin gave,
+        // or a placeholder, goes back to herdr's default, the tab's position in the workspace.
+        const ours = !!entry.auto && tab.label === entry.auto && !/^\d+$/.test(entry.auto);
+        // A placeholder tab label is stale once its panes dropped theirs after their agent exited;
+        // a new orb whose agent hasn't started yet keeps it.
+        const tabPanes = snap.panes.filter((p) => p.tab_id === id);
+        const stalePlaceholder =
+          isDefaultPaneLabel(placeholders)(tab.label) &&
+          tabPanes.every((p) => !isDefaultPaneLabel(placeholders)(paneLabel.get(p.pane_id) ?? "")) &&
+          tabPanes.some((p) => state.panes[p.pane_id]?.lastAgent);
+        if (ours || stalePlaceholder) {
+          const position = String(snap.tabs.filter((t) => t.workspace_id === tab.workspace_id).indexOf(tab) + 1);
+          if (opts.dryRun) record({ to: position, action: "would-rename", reason: "would reset to its number: nothing to name it after" });
+          else {
+            try {
+              await herdr.renameTab(id, position);
+              tabLabel.set(id, position);
+              Object.assign(entry, { auto: position, pick: null, at: Date.now() });
+              record({ to: position, action: "cleared", reason: "reset to its number: nothing to name it after" });
+            } catch (error) {
+              record({ to: position, action: "error", reason: errorText(error) });
+              continue;
+            }
+          }
+        }
         entry.fp = fp;
         continue;
       }

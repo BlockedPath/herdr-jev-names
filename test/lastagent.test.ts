@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { loadConfig } from "../src/config";
 import type { Deps } from "../src/engine";
 import { sweep } from "../src/engine";
-import { resumeHint } from "../src/lastagent";
+import { agentProgram } from "../src/context";
+import { findLastAgent, resumeHint } from "../src/lastagent";
 import type { PaneEntry } from "../src/state";
 import { Store } from "../src/state";
 import { FakeHerdr, FakeJev, pane, snapshot, tab } from "./fakes";
@@ -84,5 +85,97 @@ describe("idle shells", () => {
     const herdr = new FakeHerdr(snapshot([pane("w1:p1", "w1:t1", { label: "new orb" })], [tab("w1:t1", "1")]));
     await sweep(deps(herdr, new FakeJev(picker)), { dryRun: false });
     expect(herdr.renames).toEqual([]);
+  });
+
+  test("an agent that is exiting keeps its task name instead of becoming a generic terminal", async () => {
+    const herdr = new FakeHerdr(snapshot([pane("w1:p1", "w1:t1", { agent: "amp", terminal_title_stripped: "Codebase bug review - amp" })], [tab("w1:t1", "1")]));
+    const jev = new FakeJev((q, options) => (q === "activity" ? "run" : q === "task" ? "review" : options[0]!));
+    await sweep(deps(herdr, jev), { dryRun: false });
+    // herdr has dropped the agent, but amp is still the foreground process.
+    herdr.snap.panes[0]!.agent = null;
+    herdr.snap.agents = [];
+    herdr.processes.set("w1:p1", { foreground_processes: [{ argv: ["amp"], name: "amp" }] });
+    herdr.renames = [];
+    await sweep(deps(herdr, jev), { dryRun: false, reevaluate: true });
+    expect(herdr.renames).toEqual([]);
+  });
+
+  test("a tab does not copy a one-letter pane label", async () => {
+    const herdr = new FakeHerdr(snapshot([pane("w1:p1", "w1:t1", { agent: "pi", label: "f" })], [tab("w1:t1", "1")]));
+    await sweep(deps(herdr, new FakeJev(picker)), { dryRun: false });
+    expect(herdr.renames).toEqual([]);
+  });
+});
+
+describe("second review", () => {
+  const id = "01a1278c-09e5-7753-b5d3-464ba25ac3f8";
+
+  test("an Amp thread link in git log output is not a resume hint", async () => {
+    expect(resumeHint(`commit 9ab975f\n    Amp-Thread-ID: https://ampcode.com/threads/T-${id}\n❯`)).toBeNull();
+    expect(resumeHint(`or run 'amp threads continue T-${id}'`)).toEqual({ agent: "amp", id: `T-${id}` });
+    // A remembered pi with nothing to go on does not take an Amp hint.
+    expect(await findLastAgent({ agent: "pi" }, `amp threads continue T-${id}`, null)).toBeNull();
+  });
+
+  test("agents are recognized behind package runners", () => {
+    expect(agentProgram(["npx", "-y", "@openai/codex@latest"])).toBe("codex");
+    expect(agentProgram(["bun", "x", "@anthropic-ai/claude-code"])).toBe("claude");
+    expect(agentProgram(["pnpm", "dlx", "opencode"])).toBe("opencode");
+    expect(agentProgram(["bun", "run", "dev"])).toBeNull();
+    expect(agentProgram(["aider", "--model", "sonnet"])).toBe("aider");
+  });
+
+  test("an agent herdr can't detect is named as an agent, not frozen", async () => {
+    const herdr = new FakeHerdr(snapshot([pane("w1:p1", "w1:t1", { terminal_title_stripped: "Fix login redirect" })], [tab("w1:t1", "1")]));
+    herdr.processes.set("w1:p1", { foreground_processes: [{ argv: ["aider", "--model", "sonnet"], name: "aider" }] });
+    const jev = new FakeJev(picker);
+    await sweep(deps(herdr, jev), { dryRun: false });
+    expect(jev.calls[0]!.questions.task).toBeDefined();
+    expect(herdr.renames[0]).toEqual(["w1:p1", "Fix login redirect"]);
+  });
+
+  test("name-here still names a pane while its agent is starting", async () => {
+    const herdr = new FakeHerdr(snapshot([pane("w1:p1", "w1:t1", { terminal_title_stripped: "Meta hooks race - amp" })], [tab("w1:t1", "1")]));
+    herdr.processes.set("w1:p1", { foreground_processes: [{ argv: ["amp"], name: "amp" }] });
+    const jev = new FakeJev(picker);
+    await sweep(deps(herdr, jev), { dryRun: false });
+    expect(herdr.renames).toEqual([]);
+    await sweep(deps(herdr, jev), { dryRun: false, forcePanes: new Set(["w1:p1"]), forceTabs: new Set(["w1:t1"]), unlock: true });
+    expect(herdr.renames[0]).toEqual(["w1:p1", "Meta hooks race"]);
+  });
+
+  test("a tab named after a pane that closed goes back to its number", async () => {
+    const herdr = new FakeHerdr(snapshot([pane("w1:p1", "w1:t1", { agent: "amp", terminal_title_stripped: "Codebase bug review - amp" }), pane("w1:p2", "w1:t1", { agent: "pi", label: "f" })], [tab("w1:t1", "1", 2)]));
+    await sweep(deps(herdr, new FakeJev(picker)), { dryRun: false });
+    expect(herdr.snap.tabs[0]!.label).toBe("Codebase bug review");
+    herdr.snap.panes = herdr.snap.panes.filter((p) => p.pane_id !== "w1:p1");
+    herdr.snap.agents = herdr.snap.panes;
+    await sweep(deps(herdr, new FakeJev(picker)), { dryRun: false });
+    expect(herdr.snap.tabs[0]!.label).toBe("1");
+  });
+
+  test("a placeholder tab is reset once its orb pane's placeholder is cleared", async () => {
+    seed({ "w1:p1": { lastAgent: { agent: "amp" } } });
+    const herdr = new FakeHerdr(snapshot([pane("w1:p1", "w1:t1", { label: "new orb" })], [tab("w1:t1", "new orb")]));
+    await sweep(deps(herdr, new FakeJev(picker)), { dryRun: false });
+    expect(herdr.snap.panes[0]!.label).toBeNull();
+    expect(herdr.snap.tabs[0]!.label).toBe("1");
+  });
+
+  test("a new orb tab keeps its placeholder until the agent has run", async () => {
+    const herdr = new FakeHerdr(snapshot([pane("w1:p1", "w1:t1", { label: "new orb" })], [tab("w1:t1", "new orb")]));
+    await sweep(deps(herdr, new FakeJev(picker)), { dryRun: false });
+    expect(herdr.renames).toEqual([]);
+  });
+
+  test("a number typed over the plugin's tab name is kept", async () => {
+    const herdr = new FakeHerdr(snapshot([pane("w1:p1", "w1:t1", { agent: "amp", terminal_title_stripped: "Meta hooks race - amp" })], [tab("w1:t1", "1")]));
+    const jev = new FakeJev(picker);
+    await sweep(deps(herdr, jev), { dryRun: false });
+    herdr.snap.tabs[0]!.label = "3";
+    herdr.renames = [];
+    const decisions = await sweep(deps(herdr, jev), { dryRun: false, reevaluate: true });
+    expect(herdr.renames).toEqual([]);
+    expect(decisions.find((d) => d.kind === "tab")?.action).toBe("locked");
   });
 });

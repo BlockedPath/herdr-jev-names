@@ -30,8 +30,11 @@ it is given. For each pane the plugin:
    request (pi, Claude Code and Codex transcripts), and the last 40 lines of
    output.
 2. Builds options from that context: task titles that agents write (amp,
-   Claude Code), phrases and file names from the requests, the command's
-   target (edited file, ssh host, npm script), subfolder, branch and project.
+   Claude Code), phrases and file names from your recent requests and the
+   agent's latest reply, the files the agent edited or read (from its tool
+   calls), the command's target (edited file, ssh host, npm script),
+   subfolder, branch and project. For agents without a transcript (muse),
+   your messages and its replies are read off its screen.
 3. Asks Jev two questions in one request:
    - What is the pane doing? For agents: fix, debug, build, refactor,
      review, test, docs, explore, plan, setup, ship, research or chat. For
@@ -49,6 +52,12 @@ printed on exit (an Amp thread link, `claude --resume`, `codex resume`). For
 Amp threads the title comes from `amp threads list`. A placeholder label such
 as `new orb` is cleared when its agent has exited and there is nothing to name
 the shell after.
+
+A specific name sticks. A bare one such as `git` or `explore` doesn't
+replace `fix clef` during the same agent session, and a quick command in
+the shell doesn't either; a command that keeps running for 30 seconds does.
+An agent whose requests can be read isn't named until you've asked it
+something.
 
 A name changes only if Jev gives its pick a probability of at least 0.3, and
 the new pick has to beat the current one by 0.15. This keeps names from

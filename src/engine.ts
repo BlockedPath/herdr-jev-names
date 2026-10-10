@@ -1,7 +1,7 @@
 /** One pass over the session: decide and apply names for every pane, then every tab. */
 import type { Config } from "./config";
 import type { PaneContext } from "./context";
-import { agentProgram, collectPane, HERDR_AGENTS, readSession, sessionFields } from "./context";
+import { agentProgram, agentScreen, collectPane, HERDR_AGENTS, readSession, screenRequests, sessionFields } from "./context";
 import type { Herdr, Snapshot, SnapshotPane } from "./herdr";
 import type { Classifier } from "./jev";
 import { choiceAnswer } from "./jev";
@@ -57,11 +57,15 @@ async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>
 }
 
 /** Bump when naming rules change, so every pane is decided again once. */
-const FINGERPRINT_VERSION = 2;
+const FINGERPRINT_VERSION = 4;
 
-function paneFingerprint(ctx: PaneContext): string {
+/** How long a command must run before a bare activity name ("git", "run") may replace a specific one. */
+const LONG_RUNNING_MS = 30_000;
+
+function paneFingerprint(ctx: PaneContext, screen: string | null): string {
   return digest({
     v: FINGERPRINT_VERSION,
+    screen,
     agent: ctx.agent,
     title: ctx.rawTitle,
     command: ctx.command,
@@ -70,7 +74,13 @@ function paneFingerprint(ctx: PaneContext): string {
     first: ctx.firstPrompt,
     last: ctx.lastPrompt,
     reply: ctx.lastReply,
+    files: ctx.files.slice(0, 4),
   });
+}
+
+/** Identifies an agent session: the transcript path, or the agent alone when it has none. */
+function sessionKey(agent: string, session: string | null | undefined): string {
+  return `${agent}:${session ?? ""}`;
 }
 
 function errorText(error: unknown): string {
@@ -205,49 +215,72 @@ export async function sweep(deps: Deps, opts: SweepOptions): Promise<Decision[]>
         ctx.command = null;
       }
       Object.assign(entry, { project: ctx.project, branch: ctx.branch, agent: ctx.agent, title: ctx.titlePhrases[0] ?? null });
+      // When the current foreground command started, as far as the plugin has seen.
+      // Keyed on the job (process group) so a script swapping children keeps one start time.
+      const commandKey = ctx.command ? String(ctx.commandGroup ?? digest(ctx.command)) : null;
+      if (!commandKey) entry.command = null;
+      else if (entry.command?.key !== commandKey) entry.command = { key: commandKey, since: Date.now() };
       if (ctx.agent) {
         // Remembered so the pane can keep a name from this agent after it exits.
         const same = entry.lastAgent?.agent === ctx.agent ? entry.lastAgent : null;
         entry.lastAgent = { agent: ctx.agent, session: ctx.sessionFile ?? same?.session ?? null, title: ctx.titlePhrases[0] ?? same?.title ?? null };
       }
-      const fp = paneFingerprint(ctx);
+      // An agent without a transcript or title (muse) is known only by its screen, so the screen
+      // is part of what decides whether it changed.
+      const screenOnly = !!ctx.agent && !ctx.sessionFile && !ctx.titlePhrases.length && cfg.sendOutput;
+      let rawOutput: string | null = screenOnly ? await herdr.read(id, 60) : null;
+      if (screenOnly) {
+        ctx.output = redact(cleanOutput(rawOutput!, 40, 3500));
+        // Your messages on its screen stand in for a transcript; short replies ("no", "thanks")
+        // say less about the task than the last real question.
+        const asked = screenRequests(ctx.output).map((r) => (r.length > 400 ? r.slice(0, 400) + "…" : r));
+        const substantive = asked.filter((r) => r.split(" ").length >= 3);
+        ctx.lastPrompt = substantive.at(-1) ?? asked.at(-1) ?? null;
+        ctx.earlierPrompts = asked.filter((r) => r !== ctx.lastPrompt).slice(-2).reverse();
+      }
+      const fp = paneFingerprint(ctx, screenOnly ? digest(agentScreen(ctx.output)) : null);
       if (!forced && !opts.reevaluate && entry.fp === fp) return;
 
       const idle = !ctx.agent && !ctx.command;
-      const rawOutput = cfg.sendOutput || idle ? await herdr.read(id, 60) : "";
+      rawOutput ??= cfg.sendOutput || idle ? await herdr.read(id, 60) : "";
       if (cfg.sendOutput) ctx.output = redact(cleanOutput(rawOutput, 40, 3500));
       const wsLabel = workspaceLabel.get(pane.workspace_id) ?? null;
 
       if (idle) {
-        // A shell at its prompt keeps the name it has. Without one, it is named after the agent
-        // that last ran there; a placeholder label left by an exited agent is cleared.
-        if (entry.auto) {
+        // A shell at its prompt keeps the name it has, unless that name is bare ("git") and the agent
+        // that last ran there gives a more specific one. Without a name, it is named after that
+        // agent; a placeholder label left by an exited agent is cleared.
+        const rememberedKey = entry.lastAgent ? sessionKey(entry.lastAgent.agent, entry.lastAgent.session ?? entry.lastAgent.title) : null;
+        if (entry.auto && (entry.subject || !entry.lastAgent || entry.lastAgentTried === rememberedKey)) {
           entry.fp = fp;
           return;
         }
         const last = await findLastAgent(entry.lastAgent, stripAnsi(rawOutput), ctx.cwd);
         const via = last ? `named after the last ${last.agent} session` : "";
+        const lastKey = last ? sessionKey(last.agent, last.session ?? last.title) : null;
+        if (rememberedKey) entry.lastAgentTried = rememberedKey;
         if (last?.title) {
           const title = tidy(last.title);
           if (redact(title) === title && !/\[redacted\]/i.test(title)) {
-            await apply(truncate(title, cfg.maxPaneLength), { what: null, subject: title, subjectPick: null }, fp, via, { kind: "last-agent", agent: last.agent });
+            await apply(truncate(title, cfg.maxPaneLength), { what: null, subject: title, subjectPick: null, namedBy: lastKey }, fp, via, { kind: "last-agent", agent: last.agent });
             return;
           }
         }
         if (last?.session && cfg.sendPrompts) {
-          const session = readSession(last.session);
+          const session = readSession(last.session, entry.project && ctx.cwd ? ctx.cwd : null);
           if (session.first || session.last) {
-            const agentCtx: PaneContext = { ...ctx, agent: last.agent, agentStatus: "exited", titlePhrases: [], rawTitle: null, ...sessionFields(session) };
+            const agentCtx: PaneContext = { ...ctx, agent: last.agent, agentStatus: "exited", titlePhrases: [], rawTitle: null, promptsRead: true, ...sessionFields(session) };
             const asked = await askJev(agentCtx, wsLabel);
             if (asked === "error") return;
-            if (asked?.decision.name && asked.decision.confident) {
+            // Replacing one bare name with another gains nothing.
+            if (asked?.decision.name && asked.decision.confident && (!entry.auto || asked.decision.topic)) {
               const d = asked.decision;
-              await apply(d.name!, { what: d.what, subject: d.topic, subjectPick: d.detail.subject?.value ?? null }, fp, via, asked.detail);
+              await apply(d.name!, { what: d.what, subject: d.topic, subjectPick: d.detail.subject?.value ?? null, namedBy: lastKey }, fp, via, asked.detail);
               return;
             }
           }
         }
-        if (pane.label && isDefaultPaneLabel(placeholders)(pane.label) && (entry.lastAgent || last || resumeHint(rawOutput))) {
+        if (!entry.auto && pane.label && isDefaultPaneLabel(placeholders)(pane.label) && (entry.lastAgent || last || resumeHint(rawOutput))) {
           if (opts.dryRun) record({ to: null, action: "would-rename", reason: "would clear a placeholder left by an exited agent" });
           else {
             try {
@@ -280,7 +313,22 @@ export async function sweep(deps: Deps, opts: SweepOptions): Promise<Decision[]>
         record({ to: decision.name, action: "kept", reason: decision.name ? "Jev was not confident enough" : "no useful name", detail });
         return;
       }
-      await apply(decision.name, { what: decision.what, subject: decision.topic, subjectPick: decision.detail.subject?.value ?? null }, fp, "", detail);
+      // A bare name ("git", "explore") doesn't replace a specific one ("fix clef") the plugin gave,
+      // unless a plain command has kept running: a quick `git status` shouldn't rename the pane.
+      // For agents, only while it is the same session that gave the name: a new session or agent
+      // starts fresh.
+      const source = ctx.agent ? sessionKey(ctx.agent, ctx.sessionFile) : null;
+      const specific = own === "ours" && !!entry.subject && pane.label === entry.auto && (!ctx.agent || entry.namedBy === source);
+      if (!forced && specific && !decision.topic && decision.name !== pane.label) {
+        const ranFor = entry.command ? Date.now() - entry.command.since : 0;
+        if (ctx.agent || ranFor < LONG_RUNNING_MS) {
+          // Without a fingerprint, the next event looks again: the command may still be running.
+          if (ctx.agent) entry.fp = fp;
+          record({ to: decision.name, action: "kept", reason: `keeps the more specific ${pane.label}`, detail });
+          return;
+        }
+      }
+      await apply(decision.name, { what: decision.what, subject: decision.topic, subjectPick: decision.detail.subject?.value ?? null, namedBy: source }, fp, "", detail);
     });
   }
 

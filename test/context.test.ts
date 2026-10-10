@@ -62,6 +62,6 @@ describe("session transcripts", () => {
     const msg = (text: string) => JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text }] } });
     const reply = (text: string) => JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text }] } });
     writeFileSync(file, [JSON.stringify({ type: "session" }), msg("first ask"), reply("ok"), msg("try now for clef"), reply("done"), msg("second ask"), reply("Clef is working again"), ""].join("\n"));
-    expect(sessionPrompts(file)).toEqual({ first: "first ask", last: "second ask", earlier: ["try now for clef", "first ask"], reply: "Clef is working again" });
+    expect(sessionPrompts(file)).toEqual({ first: "first ask", last: "second ask", earlier: ["try now for clef", "first ask"], reply: "Clef is working again", files: [] });
   });
 });

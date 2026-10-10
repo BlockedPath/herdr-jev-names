@@ -39,6 +39,12 @@ export interface PaneContext {
   lastReply: string | null;
   /** The agent's transcript, when herdr reports one. */
   sessionFile: string | null;
+  /** Files the agent recently edited or read, most relevant first. */
+  files: TouchedFile[];
+  /** True when the agent's requests could be read, so their absence means nobody asked yet. */
+  promptsRead: boolean;
+  /** Process group of the foreground job: a script and its children share it. */
+  commandGroup: number | null;
   output: string;
 }
 
@@ -94,6 +100,32 @@ function isPathLike(segment: string): boolean {
   return /^(~|\/|\.\.?\/)/.test(segment) || (/\//.test(segment) && !/\s/.test(segment));
 }
 
+/** Titles agents show while busy rather than naming the task. */
+const STATUS_TITLE = /^(?:waiting(?: for (?:a |the )?(?:response|input|reply))?|thinking|working|generating|loading|processing|running|starting|ready|idle|compacting|retrying)\b/i;
+
+/**
+ * The conversation on an agent's screen as plain prose, for agents without a transcript (muse).
+ * Prompt and reply markers are stripped, chrome such as status bars and key hints is dropped, and
+ * wrapped lines are joined.
+ */
+export function agentScreen(output: string): string {
+  let text = "";
+  for (const raw of output.split("\n")) {
+    if (/voice input|ctrl\+|⌥|⌘|esc to|shift\+tab|tokens?\b|context window|\bctx\b|% used|warning ·|hidden \(/i.test(raw)) continue;
+    const line = raw.replace(/^\s*[❯›>◆●⏺•┃│▌✻✳*-]+\s*/u, "").trim();
+    if (!line) continue;
+    // Tool calls and their metadata ("Read 2 files · ctrl+o", "e · user · 3 KB"), cut-off status
+    // lines and model or version names are not the conversation.
+    if (/ · /.test(line) || /…$/.test(line) || /^[\w.-]*\d[\w.-]*$/.test(line)) continue;
+    if (/^(?:Read|Edit(?:ed)?|Wrote|Write|Bash|Ran|Search(?:ed)?|Grep|Glob|Fetch(?:ed)?|List(?:ed)?|Update[d]?|Create[d]?|Called|Used)\b/.test(line) && line.length < 48) continue;
+    // Narrow panes hard-wrap mid-word: "CLAUDE" / ".md".
+    text += /^[.,;:!?)\]]/.test(line) ? line : (text ? " " : "") + line;
+  }
+  text = text.replace(/\s+/g, " ");
+  if (text.length > 2500) text = text.slice(text.indexOf(" ", text.length - 2500) + 1);
+  return text;
+}
+
 /**
  * Splits a terminal title into task phrases. Agents write titles such as
  * "Meta hooks race - amp - ~/dev/pi-meta-oauth" or "π - bounty"; only "Meta hooks race" is useful.
@@ -117,6 +149,7 @@ export function titlePhrases(
     if (drop.cwd && (sameText(s, basename(drop.cwd)) || sameText(s, displayPath(drop.cwd)))) continue;
     if (isPathLike(s)) continue;
     if (/^[\w.-]+@[\w.-]+(:.*)?$/.test(s)) continue; // user@host
+    if (STATUS_TITLE.test(s)) continue; // "Waiting for response", "Thinking…"
     if (!/\p{L}/u.test(s)) continue;
     if (!out.some((o) => sameText(o, s))) out.push(s);
   }
@@ -292,6 +325,11 @@ export function assistantReply(line: string): string | null {
   return text || null;
 }
 
+export interface TouchedFile {
+  path: string;
+  edited: boolean;
+}
+
 export interface SessionText {
   first: string | null;
   last: string | null;
@@ -299,9 +337,77 @@ export interface SessionText {
   earlier: string[];
   /** The agent's latest reply. */
   reply: string | null;
+  /** Files the agent recently edited or read, most relevant first. */
+  files: TouchedFile[];
 }
 
-export function sessionPrompts(path: string): SessionText {
+const EDIT_TOOLS = /^(edit|write|multiedit|notebookedit|str_replace_editor|create_file|apply_patch)$/i;
+const READ_TOOLS = /^(read|view|open_file|notebookread)$/i;
+const PATCH_FILE = /\*\*\* (?:Add|Update|Delete) File: ([^\n"\\]+)/g;
+
+/** File paths an agent's tool calls in one JSONL line touched (pi, Claude Code, Codex). */
+export function toolFiles(line: string): TouchedFile[] {
+  if (!/toolCall|tool_use|File: /.test(line)) return [];
+  const out: TouchedFile[] = [];
+  let entry: any;
+  try {
+    entry = JSON.parse(line);
+  } catch {
+    return out;
+  }
+  // Codex apply_patch, only inside a tool call: a diff pasted into a prompt or echoed in a reply
+  // is not an edit.
+  const payload = entry?.type === "response_item" ? entry.payload : null;
+  if (payload && (payload.type === "custom_tool_call" || payload.type === "function_call")) {
+    const input = typeof payload.input === "string" ? payload.input : typeof payload.arguments === "string" ? payload.arguments : "";
+    for (const m of input.replace(/\\n/g, "\n").matchAll(PATCH_FILE)) out.push({ path: m[1]!.trim(), edited: true });
+    return out;
+  }
+  const content = entry?.message?.content;
+  if (!Array.isArray(content)) return out;
+  for (const block of content) {
+    if (!block || (block.type !== "toolCall" && block.type !== "tool_use")) continue;
+    const args = block.arguments ?? block.input ?? {};
+    const path = args.path ?? args.file_path ?? args.notebook_path;
+    if (typeof path !== "string" || !path) continue;
+    if (EDIT_TOOLS.test(block.name ?? "")) out.push({ path, edited: true });
+    else if (READ_TOOLS.test(block.name ?? "")) out.push({ path, edited: false });
+  }
+  return out;
+}
+
+const HOME = homedir();
+/** Agents' own state, caches and scratch space: reading these says nothing about the task. */
+const AGENT_STATE = [`${HOME}/.claude/`, `${HOME}/.codex/`, `${HOME}/.grok/`, `${HOME}/.amp/`, `${HOME}/.cache/`, "/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"];
+const NOT_TEXT = /\.(png|jpe?g|gif|webp|svg|ico|bmp|tiff?|heic|pdf|mp[34]|mov|webm|wav|zip|tar|gz|tgz|bz2|xz|7z|lock|lockb|map|log|txt|woff2?|ttf|otf|wasm|so|dylib|dll|exe|bin|db|sqlite3?)$/i;
+
+/** Whether a touched file can name the work: not agent state, not a binary, not a stray read. */
+export function relevantFile(file: TouchedFile, root: string | null): boolean {
+  const p = file.path;
+  if (/(^|\/)(node_modules|dist|build|\.git|vendor|target)\//.test(p) || NOT_TEXT.test(p)) return false;
+  if (AGENT_STATE.some((dir) => p.startsWith(dir))) return false;
+  if (p.startsWith(`${HOME}/.pi/agent/`) && !(file.edited && p.includes("/extensions/"))) return false;
+  // Outside the project, only edits count: an agent reads plenty of reference files elsewhere.
+  if (root && p.startsWith("/") && !p.startsWith(root + "/") && !file.edited) return false;
+  return true;
+}
+
+/** Ranks touched files: edits count three times a read, recent calls count more. */
+export function rankFiles(touches: TouchedFile[], limit = 6, root: string | null = null): TouchedFile[] {
+  const score = new Map<string, { file: TouchedFile; score: number }>();
+  touches.forEach((t, i) => {
+    if (!relevantFile(t, root)) return;
+    const weight = (t.edited ? 3 : 1) * (1 + i / Math.max(1, touches.length));
+    const hit = score.get(t.path);
+    if (hit) {
+      hit.score += weight;
+      hit.file.edited ||= t.edited;
+    } else score.set(t.path, { file: { ...t }, score: weight });
+  });
+  return [...score.values()].sort((a, b) => b.score - a.score).slice(0, limit).map((s) => s.file);
+}
+
+export function sessionPrompts(path: string, root: string | null = null): SessionText {
   const head = readSlice(path, "head", HEAD_BYTES).split("\n");
   let first: string | null = null;
   for (const line of head) {
@@ -316,7 +422,9 @@ export function sessionPrompts(path: string): SessionText {
     if (request) requests.push(request);
     else if (!reply && !requests.length) reply = assistantReply(tail[i]!);
   }
-  return { first, last: requests[0] ?? first, earlier: requests.slice(1), reply };
+  // Tool calls in the latest 400 transcript lines, oldest first, so recency can weigh them.
+  const touches = tail.slice(-400).flatMap((line) => toolFiles(line));
+  return { first, last: requests[0] ?? first, earlier: requests.slice(1), reply, files: rankFiles(touches, 6, root) };
 }
 
 /** Locates the transcript for a session herdr reported by id (Claude Code, Codex) or path (pi). */
@@ -357,6 +465,27 @@ export interface CollectOptions {
   sendPrompts: boolean;
 }
 
+/**
+ * Your messages on an agent's screen, oldest first: lines after a `❯` or `›` prompt marker until
+ * the next marker (muse, Claude Code). For agents without a transcript.
+ */
+export function screenRequests(output: string): string[] {
+  const out: string[] = [];
+  let current: string[] | null = null;
+  for (const raw of output.split("\n")) {
+    const prompt = /^\s*[❯›]\s+(.*)$/u.exec(raw);
+    if (prompt) {
+      if (current?.length) out.push(current.join(" "));
+      current = prompt[1]!.trim() ? [prompt[1]!.trim()] : null;
+    } else if (/^\s*[◆●⏺•┃│▌✻✳─]/u.test(raw)) {
+      if (current?.length) out.push(current.join(" "));
+      current = null;
+    } else if (current && raw.trim()) current.push(raw.trim());
+  }
+  if (current?.length) out.push(current.join(" "));
+  return out.map((r) => r.replace(/\s+/g, " ")).filter(Boolean);
+}
+
 export async function collectPane(herdr: Herdr, pane: SnapshotPane, agentInfo: SnapshotPane | undefined, opts: CollectOptions): Promise<PaneContext> {
   const info = { ...pane, ...agentInfo };
   const cwd = info.foreground_cwd || info.cwd || null;
@@ -366,7 +495,8 @@ export async function collectPane(herdr: Herdr, pane: SnapshotPane, agentInfo: S
   if (git && cwd && cwd.startsWith(git.root + "/")) subdir = cwd.slice(git.root.length + 1);
 
   const sessionFile = info.agent ? sessionPath(info.agent_session, cwd) : null;
-  const session = opts.sendPrompts && sessionFile ? readSession(sessionFile) : EMPTY_SESSION;
+  const promptsRead = opts.sendPrompts && !!sessionFile;
+  const session = promptsRead ? readSession(sessionFile!, git?.root ?? cwd) : EMPTY_SESSION;
 
   const command = info.agent ? null : foregroundCommand(proc?.foreground_processes);
   let title = info.terminal_title_stripped ?? info.terminal_title ?? null;
@@ -375,6 +505,8 @@ export async function collectPane(herdr: Herdr, pane: SnapshotPane, agentInfo: S
   return {
     ...sessionFields(session),
     sessionFile,
+    promptsRead,
+    commandGroup: command ? (proc?.foreground_process_group_id ?? null) : null,
     paneId: pane.pane_id,
     tabId: pane.tab_id,
     workspaceId: pane.workspace_id,
@@ -392,23 +524,24 @@ export async function collectPane(herdr: Herdr, pane: SnapshotPane, agentInfo: S
   };
 }
 
-const EMPTY_SESSION: SessionText = { first: null, last: null, earlier: [], reply: null };
+const EMPTY_SESSION: SessionText = { first: null, last: null, earlier: [], reply: null, files: [] };
 
 /** A transcript's requests and latest reply, or nothing if it can't be read. */
-export function readSession(path: string): SessionText {
+export function readSession(path: string, root: string | null = null): SessionText {
   try {
-    return statSync(path).isFile() ? sessionPrompts(path) : EMPTY_SESSION;
+    return statSync(path).isFile() ? sessionPrompts(path, root) : EMPTY_SESSION;
   } catch {
     return EMPTY_SESSION;
   }
 }
 
 /** Transcript text as sent to Jev: clipped and redacted. */
-export function sessionFields(session: SessionText): Pick<PaneContext, "firstPrompt" | "lastPrompt" | "earlierPrompts" | "lastReply"> {
+export function sessionFields(session: SessionText): Pick<PaneContext, "firstPrompt" | "lastPrompt" | "earlierPrompts" | "lastReply" | "files"> {
   return {
     firstPrompt: clip(session.first, 1200),
     lastPrompt: clip(session.last, 1200),
     earlierPrompts: session.earlier.map((p) => clip(p, 400)!),
     lastReply: clip(session.reply, 800),
+    files: session.files.map((f) => ({ ...f, path: redact(f.path) })).filter((f) => !f.path.includes("[redacted]")),
   };
 }

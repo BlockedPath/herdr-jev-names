@@ -35,7 +35,7 @@ function ctx(extra: Partial<PaneContext>): PaneContext {
   return {
     paneId: "w1:p1", tabId: "w1:t1", workspaceId: "w1", label: null, agent: null, agentStatus: "unknown",
     titlePhrases: [], rawTitle: null, command: null, cwd: "/x/proj", project: "proj", subdir: null, branch: null,
-    firstPrompt: null, lastPrompt: null, earlierPrompts: [], lastReply: null, sessionFile: null, output: "", ...extra,
+    firstPrompt: null, lastPrompt: null, earlierPrompts: [], lastReply: null, sessionFile: null, files: [], promptsRead: false, commandGroup: null, output: "", ...extra,
   };
 }
 
@@ -174,7 +174,7 @@ describe("naming quality", () => {
   });
 
   test("an agent name never repeats the task verb", () => {
-    const req = paneRequest(ctx({ agent: "pi", branch: "claude/fix-websocket-reconnect-Xb12z" }), "proj")!;
+    const req = paneRequest(ctx({ agent: "pi", branch: "claude/fix-websocket-reconnect-Xb12z", lastPrompt: "go ahead" }), "proj")!;
     const options = Object.keys((req.questions.subject as any).criteria);
     expect(options).toContain("websocket reconnect");
     const d = decidePane(req, result({ task: { fix: 0.9, debug: 0.1 }, subject: { "websocket reconnect": 0.8, proj: 0.2 } }), {}, "proj", opts);

@@ -9,7 +9,7 @@ function ctx(extra: Partial<PaneContext>): PaneContext {
   return {
     paneId: "w1:p1", tabId: "w1:t1", workspaceId: "w1", label: null, agent: null, agentStatus: "unknown",
     titlePhrases: [], rawTitle: null, command: null, cwd: "/x/proj", project: "proj", subdir: null, branch: null,
-    firstPrompt: null, lastPrompt: null, earlierPrompts: [], lastReply: null, sessionFile: null, output: "", ...extra,
+    firstPrompt: null, lastPrompt: null, earlierPrompts: [], lastReply: null, sessionFile: null, files: [], promptsRead: false, commandGroup: null, output: "", ...extra,
   };
 }
 

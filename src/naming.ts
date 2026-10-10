@@ -4,12 +4,38 @@
  * from the pane's own title, command, prompts, project and branch).
  */
 import type { PaneContext } from "./context";
-import { branchTopic, displayPath, echoesCommand, redactArgv } from "./context";
+import type { TouchedFile } from "./context";
+import { AGENT_WORDS, agentScreen, branchTopic, displayPath, echoesCommand, redactArgv } from "./context";
 import type { ChoiceAnswer, ClassifyResult, Question } from "./jev";
 import { choiceAnswer } from "./jev";
 import { basename, redact, sameText, tidy, truncate } from "./text";
 
-export type SubjectKind = "title" | "request" | "reply" | "file" | "target" | "subdir" | "branch" | "project" | "none";
+export type SubjectKind = "title" | "request" | "reply" | "screen" | "file" | "folder" | "target" | "subdir" | "branch" | "project" | "none";
+
+const GENERIC_FILES = /^(index|main|mod|lib|init|__init__|app|types|utils|config)\.[\w]+$|^(README\.md|package\.json|Cargo\.toml|go\.mod|pyproject\.toml)$/i;
+const GENERIC_DIRS = new Set(["src", "lib", "app", "apps", "test", "tests", "spec", "packages", "internal", "pkg", "cmd", "components", "utils", "scripts", "docs", "source", "sources"]);
+
+/** Topics from the files an agent touched: file names, and the folder several of them share. */
+export function fileTopics(files: TouchedFile[], root: string | null): Array<{ text: string; kind: SubjectKind; why: string }> {
+  const out: Array<{ text: string; kind: SubjectKind; why: string }> = [];
+  const rel = (p: string) => (root && p.startsWith(root + "/") ? p.slice(root.length + 1) : p);
+  for (const f of files.slice(0, 4)) {
+    const parts = rel(f.path).split("/").filter(Boolean);
+    const name = parts[parts.length - 1];
+    if (!name) continue;
+    // index.ts says little on its own; auth/index.ts says more.
+    const text = GENERIC_FILES.test(name) && parts.length > 1 ? `${parts[parts.length - 2]}/${name}` : name;
+    out.push({ text, kind: "file", why: f.edited ? `File the agent edited recently: ${rel(f.path)}` : `File the agent read recently: ${rel(f.path)}` });
+  }
+  const dirs = new Map<string, number>();
+  for (const f of files.slice(0, 6)) {
+    const parts = rel(f.path).split("/").filter(Boolean);
+    const dir = parts[parts.length - 2];
+    if (dir && !GENERIC_DIRS.has(dir.toLowerCase()) && !dir.startsWith(".")) dirs.set(dir, (dirs.get(dir) ?? 0) + 1);
+  }
+  for (const [dir, count] of dirs) if (count >= 2) out.push({ text: dir, kind: "folder", why: "Folder holding several of the files the agent is working on" });
+  return out;
+}
 
 export interface Subject {
   text: string;
@@ -275,6 +301,8 @@ export function subjectOptions(ctx: PaneContext, workspaceLabel: string | null):
     if (Array.from(clean).length < 2 || Array.from(clean).length > 60) return;
     // A redacted value must never become a label.
     if (/\[redacted\]/i.test(clean) || redact(clean) !== clean) return;
+    // "chat muse": the agent's own name says nothing the pane doesn't already show.
+    if (AGENT_WORDS.has(clean.toLowerCase()) || sameText(clean, ctx.agent)) return;
     if (out.some((s) => sameText(s.text, clean))) return;
     out.push({ text: clean, kind, why });
   };
@@ -291,8 +319,13 @@ export function subjectOptions(ctx: PaneContext, workspaceLabel: string | null):
     for (const p of keyphrases(ctx.lastPrompt, 6)) add(p, "request", "Phrase from the user's latest request to the agent");
     for (const p of keyphrases(ctx.earlierPrompts.join(". "), 4)) add(p, "request", "Phrase from one of the user's recent requests to the agent");
     if (ctx.firstPrompt !== ctx.lastPrompt) for (const p of keyphrases(ctx.firstPrompt, 4)) add(p, "request", "Phrase from the user's first request to the agent");
+    // What the agent actually touched names the work even when the requests don't.
+    const root = ctx.cwd && ctx.subdir && ctx.cwd.endsWith("/" + ctx.subdir) ? ctx.cwd.slice(0, -ctx.subdir.length - 1) : ctx.cwd;
+    for (const t of fileTopics(ctx.files, root)) add(t.text, t.kind, t.why);
     // Follow-ups such as "try again" name no topic; the agent's reply usually does.
     if (out.length - before < 3) for (const p of keyphrases(ctx.lastReply, 4)) add(p, "reply", "Phrase from the agent's latest reply");
+    // Agents without a transcript (muse): the conversation is on screen.
+    if (!ctx.sessionFile && !ctx.titlePhrases.length) for (const p of keyphrases(agentScreen(ctx.output), 6)) add(p, "screen", "Phrase from the conversation on the agent's screen");
   }
   if (ctx.subdir) {
     add(basename(ctx.subdir), "subdir", `Folder inside the project: ${ctx.subdir}`);
@@ -316,6 +349,11 @@ export function paneRequest(ctx: PaneContext, workspaceLabel: string | null): Pa
   if (!ctx.agent && !ctx.command) return null;
   const subjects = subjectOptions(ctx, workspaceLabel);
   if (!subjects.length) return null;
+  // An agent nobody has asked anything yet: a name would be a guess from its startup screen.
+  // Agents whose requests can't be read (muse, gemini, JEV_NAMES_SEND_PROMPTS=0) are judged from
+  // what is available instead.
+  const conversation = ctx.titlePhrases.length || ctx.firstPrompt || ctx.lastPrompt || ctx.earlierPrompts.length || ctx.files.length || subjects.some((s) => s.kind === "screen");
+  if (ctx.agent && ctx.promptsRead && !conversation) return null;
 
   const pane: Record<string, unknown> = {
     working_directory: ctx.cwd ? displayPath(ctx.cwd) : null,
@@ -330,6 +368,10 @@ export function paneRequest(ctx: PaneContext, workspaceLabel: string | null): Pa
     if (ctx.lastPrompt && ctx.lastPrompt !== ctx.firstPrompt) pane.latest_request = ctx.lastPrompt;
     if (ctx.earlierPrompts.length) pane.earlier_requests = ctx.earlierPrompts;
     if (ctx.lastReply) pane.latest_reply = ctx.lastReply;
+    const edited = ctx.files.filter((f) => f.edited).map((f) => displayPath(f.path));
+    const read = ctx.files.filter((f) => !f.edited).map((f) => displayPath(f.path));
+    if (edited.length) pane.files_edited = edited;
+    if (read.length) pane.files_read = read;
   } else {
     pane.foreground_command = ctx.command ? redactArgv(ctx.command).join(" ") : null;
   }
@@ -343,7 +385,7 @@ export function paneRequest(ctx: PaneContext, workspaceLabel: string | null): Pa
   if (subjects.length > 1) questions.subject = {
       type: "choice",
       instructions: ctx.agent
-        ? "Which option best names the specific thing the coding agent in `pane` is working on right now, so the user can recognize this pane at a glance among others? Prefer the most specific option that `pane.latest_request`, `pane.earlier_requests`, `pane.first_request`, `pane.latest_reply` or `pane.terminal_title` supports; choose the project only when nothing more specific fits."
+        ? "Which option best names the specific thing the coding agent in `pane` is working on right now, so the user can recognize this pane at a glance among others? Prefer the most specific option that `pane.latest_request`, `pane.earlier_requests`, `pane.first_request`, `pane.files_edited`, `pane.latest_reply`, `pane.terminal_title` or `pane.recent_output` supports; choose the project only when nothing more specific fits."
         : "Which option best names what the terminal in `pane` is focused on right now, so the user can recognize it at a glance among other panes? Judge from `pane.foreground_command`, `pane.terminal_title` and `pane.recent_output`. Choose `nothing specific` when no option adds information beyond the activity.",
       criteria,
     };

@@ -1,0 +1,60 @@
+id = "blockedpath.jev-names"
+name = "Jev Names"
+version = "0.1.0"
+min_herdr_version = "0.9.3"
+description = "Auto-name panes and tabs from what they are doing, picked by TypeSafe's Jev classifier"
+platforms = ["linux", "macos"]
+
+[[startup]]
+command = ["bash", "run.sh", "event"]
+
+[[events]]
+on = "pane.created"
+command = ["bash", "run.sh", "event"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["bash", "run.sh", "event"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["bash", "run.sh", "event"]
+
+[[events]]
+on = "pane.moved"
+command = ["bash", "run.sh", "event"]
+
+[[events]]
+on = "pane.closed"
+command = ["bash", "run.sh", "event"]
+
+[[events]]
+on = "tab.created"
+command = ["bash", "run.sh", "event"]
+
+# Plain shells have no agent events; focus changes catch commands started in them.
+[[events]]
+on = "pane.focused"
+command = ["bash", "run.sh", "event"]
+
+[[events]]
+on = "tab.focused"
+command = ["bash", "run.sh", "event"]
+
+[[actions]]
+id = "name-all"
+title = "Jev: name all panes and tabs"
+contexts = ["workspace"]
+command = ["bash", "run.sh", "action", "name-all"]
+
+[[actions]]
+id = "name-here"
+title = "Jev: name this pane and tab (take back manual names)"
+contexts = ["workspace"]
+command = ["bash", "run.sh", "action", "name-here"]
+
+[[actions]]
+id = "explain"
+title = "Jev: explain the name for this pane and tab"
+contexts = ["workspace"]
+command = ["bash", "run.sh", "action", "explain"]

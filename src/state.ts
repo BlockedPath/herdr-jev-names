@@ -27,6 +27,12 @@ export interface PaneEntry {
   agent?: string | null;
   /** The agent that last ran in the pane, for naming the shell it leaves behind. */
   lastAgent?: LastAgent | null;
+  /** The foreground command and when the plugin first saw it, to tell quick commands from long ones. */
+  command?: { key: string; since: number } | null;
+  /** The agent session the current name came from (`agent:transcript`); null for terminal names. */
+  namedBy?: string | null;
+  /** The remembered last-agent session already tried for this idle shell. */
+  lastAgentTried?: string | null;
   at?: number;
 }
 

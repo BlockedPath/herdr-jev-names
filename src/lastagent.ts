@@ -24,9 +24,10 @@ export interface ResumeHint {
 }
 
 const UUID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+// Anchored on the command an agent prints on exit, so a thread link elsewhere in the
+// scrollback (a commit trailer in `git log`, a pasted URL) is not mistaken for one.
 const HINTS: Array<[ResumeHint["agent"], RegExp]> = [
-  ["amp", new RegExp(`ampcode\\.com/threads/(T-${UUID})`, "g")],
-  ["amp", new RegExp(`amp threads (?:continue|c) (T-${UUID})`, "g")],
+  ["amp", new RegExp(`amp threads (?:continue|c) (?:https://ampcode\\.com/threads/)?(T-${UUID})`, "g")],
   ["claude", new RegExp(`claude (?:--resume|-r) (${UUID})`, "g")],
   ["codex", new RegExp(`codex resume (${UUID})`, "g")],
 ];
@@ -74,7 +75,8 @@ export async function ampThreadTitle(id: string): Promise<string | null> {
 export async function findLastAgent(remembered: LastAgent | null | undefined, output: string, cwd: string | null): Promise<LastAgent | null> {
   if (remembered && (remembered.title || remembered.session)) return remembered;
   const hint = resumeHint(output);
-  if (!hint) return null;
+  // A remembered agent with nothing to go on only takes a hint from the same kind of agent.
+  if (!hint || (remembered && remembered.agent !== hint.agent)) return null;
   if (hint.agent === "amp") {
     const title = await ampThreadTitle(hint.id);
     return title ? { agent: "amp", title } : null;

@@ -49,7 +49,6 @@ export const ACTIVITIES: Record<string, string> = {
   monitor: "Watching system resources, such as htop, btop, top or watch",
   deps: "Installing or updating dependencies with npm, bun, pnpm, pip, cargo or brew",
   run: "Running a one-off script, CLI tool or task",
-  agent: "Running an AI coding agent or chat assistant",
   shell: "An idle prompt, or assorted commands with no single purpose",
 };
 

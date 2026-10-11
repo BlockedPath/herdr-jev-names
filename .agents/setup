@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Prepares an Amp orb to test and typecheck this plugin.
+# Runs on fresh and stale-snapshot orbs, so every step must be idempotent.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+# bun.lock uses lockfile version 2, which the orb's preinstalled bun 1.3 can't read.
+bun_version=1.4.3
+
+step() {
+  local name="$1"
+  shift
+  echo "==> $name"
+  local start=$SECONDS
+  "$@"
+  echo "    $name took $((SECONDS - start))s"
+}
+
+install_bun() {
+  if [ "$("$HOME/.bun/bin/bun" --version 2>/dev/null)" = "$bun_version" ]; then
+    echo "    bun $bun_version already installed"
+  else
+    curl -fsSL https://bun.sh/install | bash -s "bun-v$bun_version"
+  fi
+  # Amp and login shells put ~/.local/bin ahead of /usr/local/bin, where the older bun lives.
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$HOME/.bun/bin/bun" "$HOME/.local/bin/bun"
+  ln -sf "$HOME/.bun/bin/bunx" "$HOME/.local/bin/bunx"
+}
+
+step "bun" install_bun
+step "dependencies" "$HOME/.bun/bin/bun" install --frozen-lockfile

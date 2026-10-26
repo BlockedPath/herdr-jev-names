@@ -41,7 +41,10 @@ export interface PaneContext {
   sessionFile: string | null;
   /** Files the agent recently edited or read, most relevant first. */
   files: TouchedFile[];
-  /** True when the agent's requests could be read, so their absence means nobody asked yet. */
+  /**
+   * True when the absence of requests means nobody asked yet: they could be read, or the agent has
+   * no session before the first one (Codex).
+   */
   promptsRead: boolean;
   /** Process group of the foreground job: a script and its children share it. */
   commandGroup: number | null;
@@ -501,10 +504,13 @@ export async function collectPane(herdr: Herdr, pane: SnapshotPane, agentInfo: S
   if (git && cwd && cwd.startsWith(git.root + "/")) subdir = cwd.slice(git.root.length + 1);
 
   // A transcript not written yet still counts: nobody has asked anything, and the agent's screen
-  // shows only its welcome text and input hints.
+  // shows only its welcome text and input hints. Codex reports its session only once you send the
+  // first prompt (its SessionStart hook waits for the first turn), so a Codex pane without one
+  // hasn't been asked anything either.
   const sessionFile = info.agent ? (transcriptPath(info.agent_session, cwd) ?? sessionPath(info.agent_session, cwd)) : null;
-  const promptsRead = opts.sendPrompts && !!sessionFile;
-  const session = promptsRead ? readSession(sessionFile!, git?.root ?? cwd) : EMPTY_SESSION;
+  const unasked = info.agent === "codex" && !info.agent_session;
+  const promptsRead = unasked || (opts.sendPrompts && !!sessionFile);
+  const session = promptsRead && sessionFile ? readSession(sessionFile, git?.root ?? cwd) : EMPTY_SESSION;
 
   const command = info.agent ? null : foregroundCommand(proc?.foreground_processes);
   let title = info.terminal_title_stripped ?? info.terminal_title ?? null;

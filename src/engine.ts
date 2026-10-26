@@ -226,8 +226,9 @@ export async function sweep(deps: Deps, opts: SweepOptions): Promise<Decision[]>
         entry.lastAgent = { agent: ctx.agent, session: ctx.sessionFile ?? same?.session ?? null, title: ctx.titlePhrases[0] ?? same?.title ?? null };
       }
       // An agent without a transcript or title (muse) is known only by its screen, so the screen
-      // is part of what decides whether it changed.
-      const screenOnly = !!ctx.agent && !ctx.sessionFile && !ctx.titlePhrases.length && cfg.sendOutput;
+      // is part of what decides whether it changed. A Codex pane before its first prompt has no
+      // transcript yet, and nothing on its screen to read.
+      const screenOnly = !!ctx.agent && !ctx.sessionFile && !ctx.promptsRead && !ctx.titlePhrases.length && cfg.sendOutput;
       // An agent is read from the screen it shows: its scrollback adds little, and herdr may scroll
       // the agent's screen to read it. Shells keep scrollback for the resume hints agents print on exit.
       const readFrom: ReadSource = ctx.agent ? "visible" : "recent-unwrapped";

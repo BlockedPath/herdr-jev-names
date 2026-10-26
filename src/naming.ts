@@ -325,7 +325,7 @@ export function subjectOptions(ctx: PaneContext, workspaceLabel: string | null):
     // Follow-ups such as "try again" name no topic; the agent's reply usually does.
     if (out.length - before < 3) for (const p of keyphrases(ctx.lastReply, 4)) add(p, "reply", "Phrase from the agent's latest reply");
     // Agents without a transcript (muse): the conversation is on screen.
-    if (!ctx.sessionFile && !ctx.titlePhrases.length) for (const p of keyphrases(agentScreen(ctx.output), 6)) add(p, "screen", "Phrase from the conversation on the agent's screen");
+    if (!ctx.sessionFile && !ctx.promptsRead && !ctx.titlePhrases.length) for (const p of keyphrases(agentScreen(ctx.output), 6)) add(p, "screen", "Phrase from the conversation on the agent's screen");
   }
   if (ctx.subdir) {
     add(basename(ctx.subdir), "subdir", `Folder inside the project: ${ctx.subdir}`);

@@ -72,10 +72,16 @@ describe("agents with nothing to go on", () => {
     expect(paneRequest(ctx({ agent: "pi", promptsRead: true, lastPrompt: "hi" }), "proj")).not.toBeNull();
   });
 
-  test("a Claude Code pane is not named from its welcome screen before its transcript exists", async () => {
+  test("fresh Claude Code and Codex panes are not named from their welcome screens", async () => {
     const session = { agent: "claude", kind: "id" as const, source: "herdr:claude", value: "29baf0ad-c08e-404f-990c-39ff65b70a85" };
-    const herdr = new FakeHerdr(snapshot([pane("w1:p1", "w1:t1", { agent: "claude", agent_status: "idle", terminal_title_stripped: "Claude Code", agent_session: session })], [tab("w1:t1", "1")]));
+    const herdr = new FakeHerdr(snapshot([
+      // Claude Code reports its session at startup but writes the transcript later.
+      pane("w1:p1", "w1:t1", { agent: "claude", agent_status: "idle", terminal_title_stripped: "Claude Code", agent_session: session }),
+      // Codex reports no session until the first prompt.
+      pane("w1:p2", "w1:t1", { agent: "codex", agent_status: "idle", terminal_title_stripped: "proj" }),
+    ], [tab("w1:t1", "1", 2)]));
     herdr.outputs.set("w1:p1", ' ▐▛███▜▌   Claude Code\n\n❯ Try "edit <filepath> to..."\n  ⏵⏵ auto mode on (shift+tab to cycle)\n');
+    herdr.outputs.set("w1:p2", "  >_ OpenAI Codex (v0.164.0)\n     ~/proj\n\n› Ask Codex to do anything\n\n  GPT-6.1-Sol low fast · Context 100% left · 0 in · 0 out\n  ← for agents · ? for shortcuts\n");
     const jev = new FakeJev(picker);
     await sweep(deps(herdr, jev), { dryRun: false });
     expect(jev.calls).toEqual([]);

@@ -1,4 +1,4 @@
-import type { Herdr, ProcessInfo, Snapshot, SnapshotPane, SnapshotTab } from "../src/herdr";
+import type { Herdr, ProcessInfo, ReadSource, Snapshot, SnapshotPane, SnapshotTab } from "../src/herdr";
 import type { ClassifyResult, Classifier, Question } from "../src/jev";
 
 export class FakeHerdr implements Herdr {
@@ -6,6 +6,7 @@ export class FakeHerdr implements Herdr {
   notes: string[] = [];
   processes = new Map<string, ProcessInfo>();
   outputs = new Map<string, string>();
+  reads: Array<[string, ReadSource]> = [];
 
   constructor(public snap: Snapshot) {}
 
@@ -15,7 +16,8 @@ export class FakeHerdr implements Herdr {
   async processInfo(paneId: string): Promise<ProcessInfo | null> {
     return this.processes.get(paneId) ?? { foreground_processes: [{ argv: ["-zsh"], name: "zsh" }] };
   }
-  async read(paneId: string): Promise<string> {
+  async read(paneId: string, _lines: number, source: ReadSource): Promise<string> {
+    this.reads.push([paneId, source]);
     return this.outputs.get(paneId) ?? "";
   }
   async renamePane(paneId: string, label: string): Promise<void> {

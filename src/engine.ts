@@ -2,7 +2,7 @@
 import type { Config } from "./config";
 import type { PaneContext } from "./context";
 import { agentProgram, agentScreen, collectPane, HERDR_AGENTS, readSession, screenRequests, sessionFields } from "./context";
-import type { Herdr, Snapshot, SnapshotPane } from "./herdr";
+import type { Herdr, ReadSource, Snapshot, SnapshotPane } from "./herdr";
 import type { Classifier } from "./jev";
 import { choiceAnswer } from "./jev";
 import type { PaneDecision, TabPaneSummary } from "./naming";
@@ -228,7 +228,10 @@ export async function sweep(deps: Deps, opts: SweepOptions): Promise<Decision[]>
       // An agent without a transcript or title (muse) is known only by its screen, so the screen
       // is part of what decides whether it changed.
       const screenOnly = !!ctx.agent && !ctx.sessionFile && !ctx.titlePhrases.length && cfg.sendOutput;
-      let rawOutput: string | null = screenOnly ? await herdr.read(id, 60) : null;
+      // An agent is read from the screen it shows: its scrollback adds little, and herdr may scroll
+      // the agent's screen to read it. Shells keep scrollback for the resume hints agents print on exit.
+      const readFrom: ReadSource = ctx.agent ? "visible" : "recent-unwrapped";
+      let rawOutput: string | null = screenOnly ? await herdr.read(id, 60, readFrom) : null;
       if (screenOnly) {
         ctx.output = redact(cleanOutput(rawOutput!, 40, 3500));
         // Your messages on its screen stand in for a transcript; short replies ("no", "thanks")
@@ -242,7 +245,7 @@ export async function sweep(deps: Deps, opts: SweepOptions): Promise<Decision[]>
       if (!forced && !opts.reevaluate && entry.fp === fp) return;
 
       const idle = !ctx.agent && !ctx.command;
-      rawOutput ??= cfg.sendOutput || idle ? await herdr.read(id, 60) : "";
+      rawOutput ??= cfg.sendOutput || idle ? await herdr.read(id, 60, readFrom) : "";
       if (cfg.sendOutput) ctx.output = redact(cleanOutput(rawOutput, 40, 3500));
       const wsLabel = workspaceLabel.get(pane.workspace_id) ?? null;
 

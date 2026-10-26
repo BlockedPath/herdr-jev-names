@@ -61,11 +61,18 @@ export interface ProcessInfo {
   foreground_process_group_id?: number;
 }
 
+/**
+ * `visible` is the screen as shown. `recent-unwrapped` adds scrollback; for an idle agent with a
+ * full-screen UI (Claude Code), herdr gets it by scrolling the agent's screen up and back, which
+ * takes hundreds of milliseconds.
+ */
+export type ReadSource = "visible" | "recent-unwrapped";
+
 /** The herdr operations the plugin uses. Tests substitute a fake. */
 export interface Herdr {
   snapshot(): Promise<Snapshot>;
   processInfo(paneId: string): Promise<ProcessInfo | null>;
-  read(paneId: string, lines: number): Promise<string>;
+  read(paneId: string, lines: number, source: ReadSource): Promise<string>;
   renamePane(paneId: string, label: string): Promise<void>;
   clearPaneLabel(paneId: string): Promise<void>;
   renameTab(tabId: string, label: string): Promise<void>;
@@ -141,9 +148,9 @@ export class HerdrCli implements Herdr {
     }
   }
 
-  async read(paneId: string, lines: number): Promise<string> {
+  async read(paneId: string, lines: number, source: ReadSource): Promise<string> {
     try {
-      return await this.text(["pane", "read", paneId, "--source", "recent-unwrapped", "--lines", String(lines)]);
+      return await this.text(["pane", "read", paneId, "--source", source, "--lines", String(lines)]);
     } catch {
       return "";
     }

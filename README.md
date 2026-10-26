@@ -28,7 +28,7 @@ it is given. For each pane the plugin:
 1. Collects context: the agent and its status, the terminal title, the
    foreground command, folder, git branch, the agent's first and latest
    request (pi, Claude Code and Codex transcripts), and the last 40 lines of
-   output.
+   output (for agents, of what is on screen).
 2. Builds options from that context: task titles that agents write (amp,
    Claude Code), phrases and file names from your recent requests and the
    agent's latest reply, the files the agent edited or read (from its tool

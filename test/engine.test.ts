@@ -129,6 +129,12 @@ describe("sweep", () => {
     expect(herdr.renames).toContainEqual(["w1:p1", "Meta hooks race"]);
     expect(herdr.renames).toContainEqual(["w1:p3", "tests"]);
     expect(herdr.renames.find(([id]) => id === "w1:p2")).toBeUndefined();
+    // Reading an agent's scrollback can make herdr scroll its screen; shells keep their scrollback.
+    expect(herdr.reads.sort()).toEqual([
+      ["w1:p1", "visible"],
+      ["w1:p2", "recent-unwrapped"],
+      ["w1:p3", "recent-unwrapped"],
+    ]);
     const tabCall = jev.calls.find((c) => "label" in c.questions)!;
     expect(Object.keys((tabCall.questions.label as any).criteria)).toEqual(["Meta hooks race", "tests"]);
     expect(herdr.renames.at(-1)).toEqual(["w1:t1", "Meta hooks race"]);

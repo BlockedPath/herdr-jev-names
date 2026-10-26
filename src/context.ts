@@ -37,7 +37,7 @@ export interface PaneContext {
   earlierPrompts: string[];
   /** The agent's latest reply, for panes whose requests name no topic ("try again"). */
   lastReply: string | null;
-  /** The agent's transcript, when herdr reports one. */
+  /** The agent's transcript, when herdr reports one. pi and Claude Code create it on the first exchange. */
   sessionFile: string | null;
   /** Files the agent recently edited or read, most relevant first. */
   files: TouchedFile[];
@@ -427,29 +427,35 @@ export function sessionPrompts(path: string, root: string | null = null): Sessio
   return { first, last: requests[0] ?? first, earlier: requests.slice(1), reply, files: rankFiles(touches, 6, root) };
 }
 
+/**
+ * Where a session's transcript is or will be, when that needs no search: pi reports the path, and
+ * Claude Code's follows from the id and folder. Both write the file only once there is a conversation.
+ */
+export function transcriptPath(session: AgentSession | null | undefined, cwd: string | null): string | null {
+  if (!session?.value) return null;
+  if (session.kind === "path") return session.value;
+  const id = session.value.replace(/[^A-Za-z0-9_-]/g, "");
+  if (!id || !cwd || !/claude/i.test(session.agent)) return null;
+  return join(homedir(), ".claude/projects", cwd.replace(/[^A-Za-z0-9]/g, "-"), `${id}.jsonl`);
+}
+
 /** Locates the transcript for a session herdr reported by id (Claude Code, Codex) or path (pi). */
 export function sessionPath(session: AgentSession | null | undefined, cwd: string | null): string | null {
   if (!session?.value) return null;
-  if (session.kind === "path") return existsSync(session.value) ? session.value : null;
+  const known = transcriptPath(session, cwd);
+  if (known) return existsSync(known) ? known : null;
   const id = session.value.replace(/[^A-Za-z0-9_-]/g, "");
-  if (!id) return null;
-  const home = homedir();
-  if (/claude/i.test(session.agent) && cwd) {
-    const p = join(home, ".claude/projects", cwd.replace(/[^A-Za-z0-9]/g, "-"), `${id}.jsonl`);
-    if (existsSync(p)) return p;
-  }
-  if (/codex/i.test(session.agent)) {
-    // Rollouts live in sessions/YYYY/MM/DD; look back a week.
-    const root = join(home, ".codex/sessions");
-    for (let back = 0; back < 7; back++) {
-      const d = new Date(Date.now() - back * 86_400_000);
-      const dir = join(root, String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0"));
-      try {
-        const hit = readdirSync(dir).find((f) => f.endsWith(`${id}.jsonl`));
-        if (hit) return join(dir, hit);
-      } catch {
-        // missing day directory
-      }
+  if (!id || !/codex/i.test(session.agent)) return null;
+  // Rollouts live in sessions/YYYY/MM/DD; look back a week.
+  const root = join(homedir(), ".codex/sessions");
+  for (let back = 0; back < 7; back++) {
+    const d = new Date(Date.now() - back * 86_400_000);
+    const dir = join(root, String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0"));
+    try {
+      const hit = readdirSync(dir).find((f) => f.endsWith(`${id}.jsonl`));
+      if (hit) return join(dir, hit);
+    } catch {
+      // missing day directory
     }
   }
   return null;
@@ -494,7 +500,9 @@ export async function collectPane(herdr: Herdr, pane: SnapshotPane, agentInfo: S
   let subdir: string | null = null;
   if (git && cwd && cwd.startsWith(git.root + "/")) subdir = cwd.slice(git.root.length + 1);
 
-  const sessionFile = info.agent ? sessionPath(info.agent_session, cwd) : null;
+  // A transcript not written yet still counts: nobody has asked anything, and the agent's screen
+  // shows only its welcome text and input hints.
+  const sessionFile = info.agent ? (transcriptPath(info.agent_session, cwd) ?? sessionPath(info.agent_session, cwd)) : null;
   const promptsRead = opts.sendPrompts && !!sessionFile;
   const session = promptsRead ? readSession(sessionFile!, git?.root ?? cwd) : EMPTY_SESSION;
 

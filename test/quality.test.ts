@@ -72,6 +72,16 @@ describe("agents with nothing to go on", () => {
     expect(paneRequest(ctx({ agent: "pi", promptsRead: true, lastPrompt: "hi" }), "proj")).not.toBeNull();
   });
 
+  test("a Claude Code pane is not named from its welcome screen before its transcript exists", async () => {
+    const session = { agent: "claude", kind: "id" as const, source: "herdr:claude", value: "29baf0ad-c08e-404f-990c-39ff65b70a85" };
+    const herdr = new FakeHerdr(snapshot([pane("w1:p1", "w1:t1", { agent: "claude", agent_status: "idle", terminal_title_stripped: "Claude Code", agent_session: session })], [tab("w1:t1", "1")]));
+    herdr.outputs.set("w1:p1", ' ▐▛███▜▌   Claude Code\n\n❯ Try "edit <filepath> to..."\n  ⏵⏵ auto mode on (shift+tab to cycle)\n');
+    const jev = new FakeJev(picker);
+    await sweep(deps(herdr, jev), { dryRun: false });
+    expect(jev.calls).toEqual([]);
+    expect(herdr.renames).toEqual([]);
+  });
+
   test("agents whose requests can't be read are still named from what is available", () => {
     const req = paneRequest(ctx({ agent: "gemini", promptsRead: false, branch: "fix/login-redirect" }), "work")!;
     expect(Object.keys((req.questions.subject as any).criteria)).toContain("login redirect");

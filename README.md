@@ -97,7 +97,7 @@ Requirements: herdr 0.9.3+, [bun](https://bun.sh), and a TypeSafe API key.
    herdr plugin disable blockedpath.jev-names
    root="$(herdr plugin list --plugin blockedpath.jev-names --json | jq -r '.result.plugins[0].plugin_root')"
    cfg="$(herdr plugin config-dir blockedpath.jev-names)"
-   cp "$root/config.env.example" "$cfg/config.env" && chmod 600 "$cfg/config.env"
+   [ -e "$cfg/config.env" ] || install -m 600 "$root/config.env.example" "$cfg/config.env"
    ```
 
    From a local checkout, use `herdr plugin link /path/to/herdr-jev-names --disabled`
